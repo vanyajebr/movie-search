@@ -1,7 +1,7 @@
 import streamlit as st
 import requests
 from urllib.parse import quote
-from bs4 import BeautifulSoup
+from googlesearch import search
 
 # ─── CREDENTIALS ─────────────────────────────────────────────────────────────
 TMDB_ACCESS_TOKEN = "eyJhbGciOiJIUzI1NiJ9.eyJhdWQiOiIyOGIwZTc0NjM1MTkzOGIwZGUwNjNkMjM0ZjA4ZTY4ZCIsIm5iZiI6MTc3NzIzMDYyMS40MzcsInN1YiI6IjY5ZWU2MzFkMjkyYjY3NGRlZGI0ZjRkNSIsInNjb3BlcyI6WyJhcGlfcmVhZCJdLCJ2ZXJzaW9uIjoxfQ.ZWSK3OoiF1-JBBt2qfLws3x-x4zbZ81HXcWzA2iH3Mg"
@@ -29,7 +29,6 @@ st.markdown("""
     .movie-ru-title { font-size: 16px; color: #01696f; font-weight: 600; margin-top: 4px; }
     .movie-meta     { font-size: 13px; color: #7a7974; margin-top: 6px; }
     .movie-overview { font-size: 14px; color: #28251d; margin-top: 10px; line-height: 1.5; }
-    .kinogo-link    { font-size: 14px; color: #01696f; margin-top: 10px; font-weight: 500; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -59,76 +58,56 @@ def get_russian_details(movie_id: int):
     return data.get("title", ""), data.get("overview", "")
 
 
-# ─── KINOGO SCRAPER ───────────────────────────────────────────────────────────
-def scrape_kinogo(ru_title: str):
+# ─── GOOGLE → KINOGO ──────────────────────────────────────────────────────────
+def find_kinogo_link(ru_title: str, year: str):
     """
-    Search Kinogo and return (direct_url, search_url).
-    direct_url is the first result found, or None if scraping fails.
-    search_url is always returned as a reliable fallback.
+    Use Google search with site:kinogo.org to find the direct movie page.
+    Falls back to Kinogo search URL if nothing found.
     """
     search_url = f"{KINOGO_BASE}/search/{quote(ru_title)}"
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/124.0.0.0 Safari/537.36"
-        ),
-        "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8",
-        "Referer": KINOGO_BASE,
-    }
+    query = f'site:kinogo.org "{ru_title}" {year}'
 
     try:
-        r = requests.get(search_url, headers=headers, timeout=10)
-        r.raise_for_status()
-        soup = BeautifulSoup(r.text, "html.parser")
-
-        # DLE engine standard: movie cards are in .short or .shortstory
-        # Links are in h2 > a or .short-title a or .posttitle a
-        selectors = [
-            "article.short h2 a",
-            "div.short h2 a",
-            "div.shortstory h2 a",
-            ".short-title a",
-            ".posttitle a",
-            "h2.zagolovok a",
-            ".news-title a",
-            "h2 a",  # broad fallback
-        ]
-
-        for selector in selectors:
-            link = soup.select_one(selector)
-            if link and link.get("href"):
-                href = link["href"]
-                if not href.startswith("http"):
-                    href = KINOGO_BASE + href
-                return href, search_url
-
+        results = list(search(query, num_results=5, lang="ru"))
+        for url in results:
+            # Only return actual movie pages, not search/tag/category pages
+            if (
+                "kinogo.org" in url
+                and "/search/" not in url
+                and "/page/" not in url
+                and "/tag/" not in url
+                and "/category/" not in url
+                and len(url.split("/")) >= 4
+            ):
+                return url, search_url
         return None, search_url
-
     except Exception:
         return None, search_url
 
 
 # ─── UI ───────────────────────────────────────────────────────────────────────
 st.markdown("## 🎬 Kinogo Finder")
-st.markdown("Type a movie title in English — get the official Russian title and a direct link to Kinogo.")
+st.markdown("Ketik judul film dalam bahasa Inggris — temukan judul resmi dalam bahasa Rusia dan tonton langsung di Kinogo.")
 st.markdown("---")
 
-query = st.text_input("Movie title (English)", placeholder="e.g. Inception, Interstellar, Home Alone...")
+query = st.text_input(
+    "Judul Film (Bahasa Inggris)",
+    placeholder="contoh: Inception, Interstellar, Home Alone..."
+)
 
 if query:
-    with st.spinner("Searching TMDb..."):
+    with st.spinner("Mencari di TMDb..."):
         try:
             results = search_tmdb(query)
         except Exception as e:
-            st.error(f"TMDb error: {e}")
+            st.error(f"Kesalahan TMDb: {e}")
             st.stop()
 
     if not results:
-        st.warning("No movies found on TMDb. Try a different title.")
+        st.warning("Film tidak ditemukan. Coba judul yang berbeda.")
         st.stop()
 
-    st.markdown(f"**Found {len(results)} result(s). Showing top 5:**")
+    st.markdown(f"**Ditemukan {len(results)} hasil. Menampilkan 5 teratas:**")
     st.markdown("")
 
     for movie in results[:5]:
@@ -142,9 +121,8 @@ if query:
         except Exception:
             ru_title, ru_overview = en_title, ""
 
-        # Scrape Kinogo for direct link
-        with st.spinner(f"Looking up '{ru_title}' on Kinogo..."):
-            direct_url, search_url = scrape_kinogo(ru_title)
+        with st.spinner(f"Mencari '{ru_title}' di Kinogo..."):
+            direct_url, search_url = find_kinogo_link(ru_title, year)
 
         st.markdown(f"""
 <div class="result-card">
@@ -158,10 +136,10 @@ if query:
         col1, col2 = st.columns(2)
         with col1:
             if direct_url:
-                st.link_button("🎬 Watch on Kinogo", url=direct_url, use_container_width=True)
+                st.link_button("🎬 Tonton di Kinogo", url=direct_url, use_container_width=True)
             else:
-                st.caption("⚠️ Direct link unavailable")
+                st.caption("⚠️ Tautan langsung tidak tersedia")
         with col2:
-            st.link_button("🔍 Search on Kinogo", url=search_url, use_container_width=True)
+            st.link_button("🔍 Cari di Kinogo", url=search_url, use_container_width=True)
 
         st.markdown("")
